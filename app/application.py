@@ -1,0 +1,90 @@
+import os
+from flask import Flask, render_template, request, session, redirect, url_for
+from markupsafe import Markup
+from dotenv import load_dotenv
+
+from app.config.config import BASE_DIR, GROQ_API_KEY
+from app.components.retriever import create_qa_chain
+from app.common.logger import get_logger
+
+logger = get_logger(__name__)
+
+# Ensure .env is loaded
+env_file = os.path.join(BASE_DIR, ".env")
+if os.path.exists(env_file):
+    load_dotenv(dotenv_path=env_file)
+else:
+    load_dotenv()
+
+app = Flask(__name__)
+
+# Use persistent secret key so sessions survive server restarts
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "neuramed-secure-session-key-2026")
+
+def nl2br(value):
+    if not value:
+        return ""
+    return Markup(str(value).replace("\n", "<br>\n"))
+
+app.jinja_env.filters['nl2br'] = nl2br
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    if "messages" not in session:
+        session["messages"] = []
+
+    if request.method == "POST":
+        user_input = request.form.get("prompt")
+
+        if user_input and user_input.strip():
+            user_input = user_input.strip()
+            messages = session.get('messages', [])
+
+            messages.append({"role": "user", "content": user_input})
+            # Cap session messages to recent 10 turns to avoid 4KB cookie overflow
+            session["messages"] = messages[-10:]
+
+            try:
+                qa_chain = create_qa_chain()
+                if qa_chain is None:
+                    raise Exception("QA chain could not be created. Please verify your GROQ_API_KEY in .env and ensure vectorstore/db_faiss exists.")
+                
+                response = qa_chain.invoke({"query": user_input})
+
+                result = response.get("result", "No response received.")
+                # Clean Unicode replacement character (common with smart quotes/ligatures from PDFs)
+                if isinstance(result, str):
+                    result = result.replace("\ufffd", "'").strip()
+
+                messages.append({"role": "assistant", "content": result})
+                session["messages"] = messages[-10:]
+            except Exception as e:
+                logger.error("Error generating answer: %s", e)
+                # Roll back the unanswered user message so chat doesn't get stuck in an inconsistent state
+                if messages and messages[-1].get("role") == "user":
+                    messages.pop()
+                    session["messages"] = messages
+                error_msg = f"Error: {str(e)}"
+
+                return render_template(
+                    "index.html",
+                    messages=session.get("messages", []),
+                    error=error_msg
+                )
+            
+        return redirect(url_for("index"))
+
+    return render_template("index.html", messages=session.get("messages", []))
+
+@app.route("/clear")
+def clear():
+    session.pop("messages", None)
+    return redirect(url_for("index"))
+
+if __name__ == "__main__":
+    app.run(
+        host="0.0.0.0",
+        port=5000,
+        debug=False,
+        use_reloader=False
+    )
