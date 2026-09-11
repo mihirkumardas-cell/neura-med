@@ -31,10 +31,10 @@ ENV/
 mihu/
 .venv/
 
-# Vector store data (can be large)
-vectorstore/
-*.faiss
-*.pkl
+# Vector store data - KEEP these, they are needed for Render deployment
+# vectorstore/
+# *.faiss
+# *.pkl
 
 # Logs
 logs/
